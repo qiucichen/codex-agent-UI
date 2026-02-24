@@ -14,6 +14,8 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "pending_question" not in st.session_state:
     st.session_state.pending_question = None
+if "flow_stage" not in st.session_state:
+    st.session_state.flow_stage = "idle"  # idle|await_login|await_unit|auto_resume
 
 state: UserState = st.session_state.user_state
 
@@ -58,11 +60,37 @@ def handle_question(question: str) -> None:
             return
 
         if decision.need_login:
-            st.info("我判断这是业务查询，请先登录后我会自动继续处理你刚才的问题。")
+            msg = "我判断这是业务查询，请先登录后我会自动继续处理你刚才的问题。"
+            st.info(msg)
+            st.session_state.chat_history.append(("assistant", msg))
             st.session_state.pending_question = question
+            st.session_state.flow_stage = "await_login"
+            st.rerun()
+
+        if decision.need_unit_selection:
+            msg = "我判断你有多个单位，请先选择单位，随后会自动继续回答原问题。"
+            st.warning(msg)
+            st.session_state.chat_history.append(("assistant", msg))
+            st.session_state.pending_question = question
+            st.session_state.flow_stage = "await_unit"
+            st.rerun()
+
+        unit = state.selected_unit or (state.units[0] if state.units else "默认单位")
+        mcp = call_mcp_tool(decision.mcp_tool or "query_fire_alarm_count", unit)
+        answer = llm_compose_answer(question, mcp.title, mcp.summary, mcp.data)
+        st.markdown(answer.narrative)
+        if answer.chart_type:
+            draw_chart(answer.chart_type, answer.chart_payload)
+        st.session_state.chat_history.append(("assistant", answer.narrative))
+        st.session_state.flow_stage = "idle"
+
+
+def render_gate_forms() -> None:
+    if st.session_state.flow_stage == "await_login":
+        with st.chat_message("assistant"):
             with st.form("login_form", clear_on_submit=False):
-                username = st.text_input("登录用户名")
-                password = st.text_input("用户密码", type="password")
+                username = st.text_input("登录用户名", key="login_username")
+                password = st.text_input("用户密码", type="password", key="login_password")
                 login_submit = st.form_submit_button("登录")
             if login_submit:
                 if validate_login(username, password):
@@ -74,34 +102,40 @@ def handle_question(question: str) -> None:
                     msg = "登录成功，正在自动继续回答原问题。"
                     st.success(msg)
                     st.session_state.chat_history.append(("assistant", msg))
+                    st.session_state.flow_stage = "auto_resume"
                     st.rerun()
                 else:
                     msg = "登录失败：用户名或密码不能为空。"
                     st.error(msg)
                     st.session_state.chat_history.append(("assistant", msg))
-            return
 
-        if decision.need_unit_selection:
-            st.warning("我判断你有多个单位，请先选择单位，随后会自动继续回答原问题。")
-            st.session_state.pending_question = question
+    if st.session_state.flow_stage == "await_unit":
+        with st.chat_message("assistant"):
             with st.form("unit_select_form", clear_on_submit=False):
-                selected = st.selectbox("请选择单位", options=state.units)
+                selected = st.selectbox("请选择单位", options=state.units, key="unit_selector")
                 unit_submit = st.form_submit_button("确认单位")
             if unit_submit:
                 state.selected_unit = selected
                 msg = f"已选择单位：{selected}，正在自动继续回答原问题。"
                 st.success(msg)
                 st.session_state.chat_history.append(("assistant", msg))
+                st.session_state.flow_stage = "auto_resume"
                 st.rerun()
-            return
 
-        unit = state.selected_unit or (state.units[0] if state.units else "默认单位")
-        mcp = call_mcp_tool(decision.mcp_tool or "query_fire_alarm_count", unit)
-        answer = llm_compose_answer(question, mcp.title, mcp.summary, mcp.data)
-        st.markdown(answer.narrative)
-        if answer.chart_type:
-            draw_chart(answer.chart_type, answer.chart_payload)
-        st.session_state.chat_history.append(("assistant", answer.narrative))
+
+def auto_resume_pending_question() -> None:
+    if st.session_state.flow_stage != "auto_resume":
+        return
+    pending = st.session_state.pending_question
+    if not pending:
+        st.session_state.flow_stage = "idle"
+        return
+    st.session_state.pending_question = None
+    resume_msg = f"🔄 正在自动继续处理原问题：{pending}"
+    with st.chat_message("assistant"):
+        st.info(resume_msg)
+    st.session_state.chat_history.append(("assistant", resume_msg))
+    handle_question(pending)
 
 
 st.title("🚒 消防业务对话 Agent（LLM编排 + FastMCP）")
@@ -125,6 +159,7 @@ with st.sidebar:
     st.write(f"可选单位：{', '.join(state.units) if state.units else '无'}")
     st.write(f"已选单位：{state.selected_unit or '无'}")
     st.write(f"待续答问题：{st.session_state.pending_question or '无'}")
+    st.write(f"流程阶段：{st.session_state.flow_stage}")
     st.divider()
     st.markdown("**支持业务查询（FastMCP 模拟值）**")
     for item in list_supported_business_queries():
@@ -134,10 +169,8 @@ for role, content in st.session_state.chat_history:
     with st.chat_message(role):
         st.markdown(content)
 
-if st.session_state.pending_question and state.logged_in and (len(state.units) <= 1 or state.selected_unit):
-    pending = st.session_state.pending_question
-    st.session_state.pending_question = None
-    handle_question(pending)
+render_gate_forms()
+auto_resume_pending_question()
 
 question = st.chat_input("请输入问题")
 if question:

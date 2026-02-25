@@ -1,67 +1,70 @@
-# 消防业务对话 Agent（Python, LLM编排 + FastMCP）
+# 消防业务对话 Agent（前后端分离：Python 流程引擎 + 任意前端）
 
-## 目标
-实现一个支持多轮会话的 Agent：
-- 普通对话
-- 消防业务查询（由大模型判断是否需登录/单位选择）
-- 前置条件完成后自动继续回答“原始业务问题”（无需用户再次提交）
-- 输出形态为“文字描述 + 图像并存”
+## 对你早期要求的回顾（逐条对应）
+1. **普通对话不需要登录**：普通聊天直接返回文本，不触发登录 UI。  
+2. **业务问题需要登录**：由 Python 流程引擎判断业务意图，返回 `show_login`。  
+3. **登录/单位下拉交互在对话框中按需显示**：前端在消息区内动态插入登录表单或单位选择组件。  
+4. **前端仅提供对话与交互 UI**：不保存流程判断，不写业务分支规则。  
+5. **LLM 决策是否使用 UI 以及使用什么 UI**：后端 `llm_decide + workflow_engine` 决策并返回 `ui_action` + `extra.ui`。  
+6. **执行流程框架用 Python 开发**：登录校验、单位选择、自动续答原问题、MCP 调用全在 Python 后端。  
 
-## 架构说明（模块不过度拆分）
+## 架构
 
-### 1) `agent_core.py`：Agent 编排核心
-- `llm_decide(question, state)`：模拟大模型决策，判断普通对话/业务问题，以及是否要登录、是否要单位选择。
-- `llm_compose_answer(...)`：将 MCP 结果组织成自然语言叙述 + 图像指令（不是固定字段填充回复）。
-- `UserState`：会话登录态、单位信息、所选单位。
+### 1) `workflow_engine.py`（核心流程引擎，Python）
+- 会话级状态：登录态、单位、挂起问题、历史消息。
+- 统一流程入口：
+  - `process_chat`
+  - `login`
+  - `select_unit`
+- 后端返回 `ui_action`（如 `show_login` / `show_unit` / `render_result`）以及 `extra.ui`，前端只根据动作渲染。
 
-### 2) `mcp_server.py`：标准 FastMCP 服务层 + 模拟数据
-- 使用 `FastMCP` 注册工具（若环境未安装 fastmcp，可退化为本地函数调用）。
-- 提供 4 个业务工具：
-  - 火警数量
-  - 平面图
-  - 未闭环隐患数量（新增）
-  - 设备在线率（新增）
+### 2) `backend_api.py`（Python API 层）
+- 基于 FastAPI 暴露接口：
+  - `POST /api/session`
+  - `POST /api/chat`
+  - `POST /api/login`
+  - `POST /api/select-unit`
+  - `GET /api/state/{session_id}`
+- API 不做业务编排，仅把请求交给 `workflow_engine.py`。
 
-### 3) `app.py`：对话 UI 与流程驱动（Streamlit）
-- 多轮聊天历史持续保留。
-- 业务问题触发时：
-  1. 模型判断需要登录 -> 输出登录框（用户名/密码/登录按钮）
-  2. 模型判断多单位未选择 -> 输出单位下拉选择
-  3. 前置条件达成后自动续答 `pending_question`
-  4. 自动续答时会显示明确提示（“正在自动继续处理原问题”）；登录与单位选择由持久化流程阶段控制，不依赖 submit 瞬时值跨轮保留；阶段切换后会主动 rerun 立即刷新到下一步 UI
-- 数量类/在线率展示图表，平面图展示示意图。
+### 3) `frontend/`（前端示例）
+- `index.html` + `app.js` + `styles.css`。
+- 仅负责：消息展示、对话区内登录框、对话区内单位下拉、结果图形渲染。
+- 可替换为 React/Vue/任意 Web 前端，流程无需改动。
 
-## 整体流程图
+### 4) 业务与模型
+- `agent_core.py`：LLM 决策与答案组织。
+- `mcp_server.py`：FastMCP 工具模拟（火警数量/平面图/隐患/在线率）。
+
+## 流程图
 
 ```mermaid
 flowchart TD
-    A[用户输入问题] --> B[LLM决策: 普通/业务]
-    B -->|普通| C[直接自然语言回复]
-    B -->|业务| D{是否登录?}
-    D -->|否| E[输出登录UI]
-    E --> F[保存登录态]
-    F --> B
-    D -->|是| G{是否多单位未选择?}
-    G -->|是| H[输出单位下拉UI]
-    H --> I[保存所选单位]
-    I --> B
-    G -->|否| J[调用FastMCP工具]
-    J --> K[LLM整合为文字+图像输出]
+    A[前端发送问题 /api/chat] --> B[Python WorkflowEngine]
+    B --> C{LLM判断}
+    C -->|普通对话| D[返回文本]
+    C -->|业务问题| E{是否已登录}
+    E -->|否| F[返回 ui_action=show_login + login_form]
+    E -->|是| G{是否需选单位}
+    G -->|是| H[返回 ui_action=show_unit + unit_select]
+    G -->|否| I[调用MCP]
+    I --> J[LLM整合文字+图像结构]
+    J --> K[返回 ui_action=render_result]
 ```
-
-## 示例测试问题列表（保留）
-1. 你好，帮我总结今天工作
-2. 查询单位的火警数量
-3. 查询单位的平面图
-4. 查询单位未闭环隐患数量
-5. 查询单位消防设备在线率
-6. 刚才的结果还有什么风险建议？
 
 ## 运行
+
+### 启动后端（Python 控制流程）
 ```bash
-pip install -r requirements.txt
-streamlit run app.py
+uvicorn backend_api:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+### 启动前端示例（静态）
+```bash
+python -m http.server 5500 --directory frontend
+```
+
+浏览器打开 `http://127.0.0.1:5500`。
 
 ## 测试
 ```bash

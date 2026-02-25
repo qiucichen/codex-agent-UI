@@ -1,0 +1,15 @@
+body { margin: 0; font-family: Arial, sans-serif; background: #f5f6f8; }
+.app { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+.sidebar { background: #fff; padding: 16px; border-right: 1px solid #e5e7eb; }
+.chat-panel { padding: 16px; }
+.messages { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; min-height: 320px; max-height: 420px; overflow-y: auto; }
+.msg { margin: 8px 0; padding: 10px 12px; border-radius: 8px; }
+.user { background: #e8f0ff; }
+.assistant { background: #eefaf0; }
+.composer { display: flex; gap: 8px; margin-top: 12px; }
+.composer input { flex: 1; padding: 10px; }
+button { padding: 10px 14px; cursor: pointer; }
+.widget-card { background: #fff8e7; border: 1px solid #f0d9a7; border-radius: 8px; padding: 12px; margin: 10px 0; display: grid; gap: 8px; }
+.widget-card input, .widget-card select { padding: 8px; }
+.widget-title { font-weight: bold; color: #7a4b00; }
+#chart { margin-top: 12px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; }
